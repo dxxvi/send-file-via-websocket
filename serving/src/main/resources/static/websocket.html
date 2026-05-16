@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>websocket</title>
+</head>
+
+<body>
+    <button id="downloadBtn">Download File</button>
+    <div id="indicator" style="width: 50px; height: 50px; background-color: lightgray; border-radius: 50%; margin-top: 20px;"></div>
+
+    <script>
+        document.getElementById("downloadBtn").addEventListener("click", async () => {
+            const indicator = document.getElementById("indicator");
+            let blinkState = false;
+
+            function blink() {
+                blinkState = !blinkState;
+                indicator.style.backgroundColor = blinkState ? '#32cd32' : '#1e90ff';
+            }
+
+            // Reset the file on the receiving app
+            try {
+                await fetch(`http://${location.hostname}:9090/reset`, { method: 'POST' });
+            } catch (err) {
+                console.error("Failed to reset file: " + err);
+            }
+
+            const ws = new WebSocket("ws://" + location.host + "/ws-download");
+            
+            ws.binaryType = "arraybuffer"; // Receive as ArrayBuffer
+
+            ws.onopen = () => {
+                indicator.style.backgroundColor = '#1e90ff';
+            };
+
+            let uploadQueue = Promise.resolve();
+
+            ws.onmessage = (event) => {
+                uploadQueue = uploadQueue.then(() => {
+                    return fetch(`http://${location.hostname}:9090/upload-chunk`, {
+                        method: 'POST',
+                        body: event.data,
+                        headers: { 'Content-Type': 'application/octet-stream' }
+                    }).then(() => {
+                        blink();
+                    });
+                }).catch(err => {
+                    console.error("Upload error: " + err);
+                    indicator.style.backgroundColor = 'red';
+                });
+            };
+
+            ws.onclose = () => {
+                uploadQueue.then(() => {
+                    indicator.style.backgroundColor = '#32cd32'; // Solid green on finish
+                });
+            };
+
+            ws.onerror = (error) => {
+                indicator.style.backgroundColor = 'red';
+            };
+        });
+    </script>
+</body>
+
+</html>

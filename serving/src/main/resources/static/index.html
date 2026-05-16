@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>--></title>
+</head>
+
+<body>
+  <img id="img" src="">
+  <script>
+    window.addEventListener("load", () => {
+      const img = document.getElementById("img");
+
+      img.addEventListener("load", () => {
+        const cookies = document.cookie.split(';');
+        let chunksValue = 0;
+        for (let i = 0; i < cookies.length; i++) {
+          const cookie = cookies[i].trim();
+          if (cookie.startsWith("chunks=")) {
+            chunksValue = parseInt(cookie.substring("chunks=".length), 10);
+            break;
+          }
+        }
+        window.numberOfChunks = chunksValue; // save in a variable for later use
+        console.log(`number of chunks = ${chunksValue}`);
+      });
+
+      const randomText = Math.random().toString(36).substring(2, 10);
+      img.src = `${randomText}.png`;
+    });
+  </script>
+</body>
+
+</html>
