@@ -32,6 +32,8 @@ public class ServingApp implements WebSocketConfigurer {
 
   private final String fileToDownload;
 
+  private byte[] fileBytes = null;
+
   public ServingApp(@Value("${file.to.download}") String fileToDownload) {
     this.fileToDownload = fileToDownload;
   }
@@ -82,7 +84,9 @@ public class ServingApp implements WebSocketConfigurer {
       int x = Integer.parseInt(parts[0]);
       int y = parts.length == 1 ? x : Integer.parseInt(parts[1]);
 
-      byte[] fileBytes = java.nio.file.Files.readAllBytes(new File(fileToDownload).toPath());
+      if (fileBytes == null)
+        fileBytes = java.nio.file.Files.readAllBytes(new File(fileToDownload).toPath());
+
       ResponseEntity.BodyBuilder responseBuilder = ResponseEntity.ok();
 
       for (int i = x; i <= y; i++) {
