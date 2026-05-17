@@ -31,4 +31,18 @@ public class ReceivingApp {
       fos.write(chunk);
     }
   }
+
+  @CrossOrigin(origins = "*")
+  @PostMapping("/upload-chunks")
+  public void uploadChunks(@RequestBody java.util.List<String> chunks) throws IOException {
+    File outputFile = new File("/tmp/received_file");
+    try (FileOutputStream fos = new FileOutputStream(outputFile, true)) {
+      for (String chunk : chunks) {
+        if (chunk != null && !chunk.isEmpty()) {
+          byte[] decodedBytes = java.util.Base64.getDecoder().decode(chunk);
+          fos.write(decodedBytes);
+        }
+      }
+    }
+  }
 }

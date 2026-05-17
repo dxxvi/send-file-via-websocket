@@ -80,7 +80,7 @@ public class ServingApp implements WebSocketConfigurer {
     try {
       String[] parts = chunks.split("-");
       int x = Integer.parseInt(parts[0]);
-      int y = Integer.parseInt(parts[1]);
+      int y = parts.length == 1 ? x : Integer.parseInt(parts[1]);
 
       byte[] fileBytes = java.nio.file.Files.readAllBytes(new File(fileToDownload).toPath());
       ResponseEntity.BodyBuilder responseBuilder = ResponseEntity.ok();

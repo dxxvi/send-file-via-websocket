@@ -11,19 +11,91 @@
   <script>
     window.addEventListener("load", () => {
       const img = document.getElementById("img");
+      let currentChunk = 1;
 
-      img.addEventListener("load", () => {
-        const cookies = document.cookie.split(';');
-        let chunksValue = 0;
-        for (let i = 0; i < cookies.length; i++) {
-          const cookie = cookies[i].trim();
-          if (cookie.startsWith("chunks=")) {
-            chunksValue = parseInt(cookie.substring("chunks=".length), 10);
-            break;
+      img.addEventListener("load", async () => {
+        if (window.numberOfChunks === undefined) {
+          const cookies = document.cookie.split(';');
+          let chunksValue = 0;
+          for (let i = 0; i < cookies.length; i++) {
+            const cookie = cookies[i].trim();
+            if (cookie.startsWith("chunks=")) {
+              chunksValue = parseInt(cookie.substring("chunks=".length), 10);
+              break;
+            }
+          }
+          window.numberOfChunks = chunksValue; // save in a variable for later use
+          console.log(`number of chunks = ${chunksValue}`);
+
+          if (window.numberOfChunks > 0) {
+            let nextChunk = currentChunk + 1;
+            if (nextChunk > window.numberOfChunks) {
+              img.src = `${currentChunk}.jpg`;
+            } else {
+              img.src = `${currentChunk}-${nextChunk}.jpg`;
+            }
           }
         }
-        window.numberOfChunks = chunksValue; // save in a variable for later use
-        console.log(`number of chunks = ${chunksValue}`);
+        else {
+          // Process chunks
+          let chunk1 = null;
+          let chunk2 = null;
+          let nextChunk = currentChunk + 1;
+
+          const cookies = document.cookie.split(';');
+          for (let i = 0; i < cookies.length; i++) {
+            const cookie = cookies[i].trim();
+            if (cookie.startsWith(`chunk-${currentChunk}=`)) {
+              chunk1 = cookie.substring(`chunk-${currentChunk}=`.length);
+            }
+            if (nextChunk <= window.numberOfChunks && cookie.startsWith(`chunk-${nextChunk}=`)) {
+              chunk2 = cookie.substring(`chunk-${nextChunk}=`.length);
+            }
+          }
+
+          const payload = [];
+          if (chunk1) payload.push(chunk1);
+          if (chunk2) payload.push(chunk2);
+
+          if (payload.length > 0) {
+            try {
+              const response = await fetch("http://localhost:9090/upload-chunks", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json"
+                },
+                body: JSON.stringify(payload)
+              });
+
+              if (response.ok) {
+                // Delete all cookies
+                const cookiesToDel = document.cookie.split(';');
+                for (let i = 0; i < cookiesToDel.length; i++) {
+                  const cookie = cookiesToDel[i].trim();
+                  const eqPos = cookie.indexOf("=");
+                  const name = eqPos > -1 ? cookie.substring(0, eqPos) : cookie;
+                  document.cookie = name + "=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/";
+                }
+
+                await new Promise(resolve => setTimeout(resolve, 100));
+
+                currentChunk += 2;
+                if (currentChunk <= window.numberOfChunks) {
+                  let next = currentChunk + 1;
+                  if (next > window.numberOfChunks) {
+                    img.src = `${currentChunk}.jpg`;
+                  } else {
+                    img.src = `${currentChunk}-${next}.jpg`;
+                  }
+                } else {
+                  console.log("Transfer complete.");
+                }
+              }
+            } catch (error) {
+              console.error("Error uploading chunks:", error);
+            }
+          }
+        }
       });
 
       const randomText = Math.random().toString(36).substring(2, 10);
