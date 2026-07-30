@@ -28,7 +28,7 @@ import org.springframework.web.socket.handler.BinaryWebSocketHandler;
 @SpringBootApplication
 @EnableWebSocket
 public class ServingApp implements WebSocketConfigurer {
-  private static final int CHUNK_SIZE = 2799;
+  private static final int CHUNK_SIZE = 1_999_799;
 
   private final String fileToDownload;
 
