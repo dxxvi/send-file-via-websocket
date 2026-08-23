@@ -2,52 +2,163 @@
 <html lang="en">
 
 <head>
-  <meta charset="utf-8">
-  <title>&lt;--&gt;</title>
+    <meta charset="UTF-8">
+    <title>upload</title>
 </head>
 
 <body>
-  <input type="file" id="fileInput">
-  <button id="uploadBtn">Upload File</button>
-  <div id="uploadIndicator" style="width: 50px; height: 50px; background-color: lightgray; border-radius: 50%; margin-top: 20px;"></div>
+    <input id="app1" value="http://localhost:9090" size="40">
+    <button id="infoBtn">Fetch Info</button>
+    <button id="startBtn" disabled>Start</button>
+    <div id="indicator" style="width: 2rem; height: 2rem; background-color: #888; border-radius: 50%; margin: 1rem"></div>
+    <div id="info"></div>
+    <progress id="bar" value="0" max="1"></progress>
+    <span id="progressLabel"></span>
+    <div id="status"></div>
 
-  <script>
-    document.getElementById("uploadBtn").addEventListener("click", async () => {
-      const indicator = document.getElementById("uploadIndicator");
-      const file = document.getElementById("fileInput").files[0];
+    <script>
+        const app1Input = document.getElementById("app1");
+        const infoBtn = document.getElementById("infoBtn");
+        const startBtn = document.getElementById("startBtn");
+        const indicator = document.getElementById("indicator");
+        const infoDiv = document.getElementById("info");
+        const bar = document.getElementById("bar");
+        const progressLabel = document.getElementById("progressLabel");
+        const statusDiv = document.getElementById("status");
 
-      if (!file) {
-        alert("Please select a file first.");
-        return;
-      }
+        const BACKPRESSURE_LIMIT = 8 * 1024 * 1024;
+        let blinkState = false;
+        let info = null;
 
-      const CHUNK_SIZE = 1024 * 1024;
-      const ws = new WebSocket("ws://" + location.host + "/ws-upload");
-
-      ws.onopen = async () => {
-        indicator.style.backgroundColor = '#1e90ff';
-
-        ws.send(file.name);
-
-        for (let offset = 0; offset < file.size; offset += CHUNK_SIZE) {
-          while (ws.bufferedAmount > 0) {
-            await new Promise(resolve => setTimeout(resolve, 10));
-          }
-          ws.send(await file.slice(offset, offset + CHUNK_SIZE).arrayBuffer());
+        function base() {
+            return app1Input.value.replace(/\/+$/, "");
         }
 
-        ws.close();
-      };
+        function fmt(n) {
+            if (n < 1024) return n + " B";
+            const units = ["KiB", "MiB", "GiB", "TiB"];
+            let i = -1;
+            do { n /= 1024; i++; } while (n >= 1024 && i < units.length - 1);
+            return n.toFixed(2) + " " + units[i];
+        }
 
-      ws.onclose = () => {
-        indicator.style.backgroundColor = '#32cd32';
-      };
+        function setStatus(color, text) {
+            indicator.style.backgroundColor = color;
+            statusDiv.textContent = text || "";
+        }
 
-      ws.onerror = () => {
-        indicator.style.backgroundColor = 'red';
-      };
-    });
-  </script>
+        function blink() {
+            blinkState = !blinkState;
+            indicator.style.backgroundColor = blinkState ? '#32cd32' : '#1e90ff';
+        }
+
+        async function fetchInfo() {
+            infoBtn.disabled = true;
+            startBtn.disabled = true;
+            try {
+                setStatus('#888', "");
+                infoDiv.textContent = "";
+                const res = await fetch(`${base()}/file/info`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+                info = await res.json();
+                infoDiv.textContent = `${info.name} — ${fmt(info.size)} — sha256 ${info.sha256}`;
+                bar.max = Math.max(info.size, 1);
+                bar.value = 0;
+                progressLabel.textContent = "";
+                startBtn.disabled = false;
+                setStatus('#888', "Ready.");
+            } catch (err) {
+                setStatus('red', "Failed to fetch file info: " + err.message);
+            } finally {
+                infoBtn.disabled = false;
+            }
+        }
+
+        function drain(ws) {
+            return new Promise(resolve => {
+                const step = () => {
+                    if (ws.readyState !== WebSocket.OPEN || ws.bufferedAmount < BACKPRESSURE_LIMIT) {
+                        resolve();
+                    } else {
+                        setTimeout(step, 50);
+                    }
+                };
+                step();
+            });
+        }
+
+        async function startUpload() {
+            if (!info) return;
+            infoBtn.disabled = true;
+            startBtn.disabled = true;
+
+            let finished = false;
+
+            const fail = (message) => {
+                finished = true;
+                setStatus('red', message);
+            };
+
+            const ws = new WebSocket(`ws://${location.host}/ws-upload`);
+
+            ws.onerror = () => {
+                if (!finished) fail("WebSocket error.");
+            };
+
+            ws.onclose = () => {
+                if (!finished) fail("Connection closed before finishing; partial data discarded.");
+                startBtn.disabled = false;
+                infoBtn.disabled = false;
+            };
+
+            ws.onmessage = (event) => {
+                let msg = {};
+                try { msg = JSON.parse(event.data); } catch (err) { }
+                if (msg.action === "done") {
+                    finished = true;
+                    setStatus('#32cd32', "Done. sha256 verified by server.");
+                    ws.close();
+                } else if (msg.action === "error") {
+                    fail("Server error: " + (msg.message || "unknown"));
+                    try { ws.close(); } catch (err) { }
+                }
+            };
+
+            ws.onopen = async () => {
+                try {
+                    setStatus('#1e90ff', "Sending...");
+                    ws.send(JSON.stringify({ action: "start", name: info.name, size: info.size, sha256: info.sha256 }));
+
+                    const res = await fetch(`${base()}/file`);
+                    if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+
+                    const reader = res.body.getReader();
+                    let sent = 0;
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        await drain(ws);
+                        if (finished) throw new Error("aborted after server error");
+                        ws.send(value);
+                        sent += value.byteLength;
+                        bar.value = sent;
+                        progressLabel.textContent = `${fmt(sent)} / ${fmt(info.size)} (${Math.floor(sent * 100 / Math.max(info.size, 1))}%)`;
+                        blink();
+                    }
+
+                    ws.send(JSON.stringify({ action: "finish" }));
+                    statusDiv.textContent = "Verifying sha256...";
+                } catch (err) {
+                    if (!finished) {
+                        fail("Transfer failed: " + err.message);
+                        try { ws.close(); } catch (closeErr) { }
+                    }
+                }
+            };
+        }
+
+        infoBtn.addEventListener("click", fetchInfo);
+        startBtn.addEventListener("click", startUpload);
+    </script>
 </body>
-
 </html>

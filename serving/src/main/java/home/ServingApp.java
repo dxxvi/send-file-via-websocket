@@ -1,33 +1,33 @@
 package home;
 
-import java.awt.Color;
-import java.awt.Font;
-import java.awt.Graphics2D;
-import java.awt.image.BufferedImage;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import jakarta.annotation.Nonnull;
 import java.io.BufferedOutputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
-import java.io.OutputStream;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.security.DigestOutputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
+import java.util.Locale;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import javax.imageio.ImageIO;
+import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
-import org.springframework.http.ResponseCookie;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.socket.BinaryMessage;
 import org.springframework.web.socket.CloseStatus;
@@ -36,7 +36,6 @@ import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.config.annotation.EnableWebSocket;
 import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
 import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry;
-import org.springframework.web.socket.handler.AbstractWebSocketHandler;
 import org.springframework.web.socket.handler.BinaryWebSocketHandler;
 import org.springframework.web.socket.server.standard.ServletServerContainerFactoryBean;
 
@@ -52,20 +51,26 @@ public class ServingApp implements WebSocketConfigurer {
 
   private final String uploadDir;
 
-  private final Map<WebSocketSession, OutputStream> uploads = new ConcurrentHashMap<>();
+  private final ObjectMapper objectMapper = new ObjectMapper();
 
-  private byte[] fileBytes = null;
+  private final Map<WebSocketSession, UploadState> uploadStates = new ConcurrentHashMap<>();
 
   public ServingApp(
       @Value("${file.to.download}") String fileToDownload,
-      @Value("${file.to.upload.dir}") String uploadDir) {
+      @Value("${upload.to.dir}") String uploadDir) {
     this.fileToDownload = fileToDownload;
     this.uploadDir = uploadDir;
   }
 
   static void main(String[] args) {
-    System.setProperty("file.to.download", "/tmp/msys64.7z");
-    System.setProperty("file.to.upload.dir", "/home/ubuntu");
+    if (Stream.of(args).noneMatch("file.to.download"::equals)) {
+      System.setProperty("file.to.download", "");
+      log.info("File to download is /tmp/msys64.7z. To change, set file.to.download");
+    }
+    if (Stream.of(args).noneMatch("upload.to.dir"::equals)) {
+      System.setProperty("upload.to.dir", "/home/ubuntu");
+      log.info("Upload to dir /home/ubuntu. To change, set upload.to.dir");
+    }
 
     SpringApplication.run(ServingApp.class, args);
   }
@@ -78,94 +83,13 @@ public class ServingApp implements WebSocketConfigurer {
     return container;
   }
 
-  @GetMapping(path = "/{info}.png", produces = MediaType.IMAGE_PNG_VALUE)
-  public ResponseEntity<byte[]> getInfo(@PathVariable String info) {
-    try {
-      File file = new File(fileToDownload);
-      long fileSizeInBytes = file.length();
-      long n = (fileSizeInBytes + CHUNK_SIZE - 1) / CHUNK_SIZE;
-
-      String text =
-          String.format("File %s size %d bytes, %d chunks", fileToDownload, fileSizeInBytes, n);
-
-      BufferedImage image = new BufferedImage(800, 100, BufferedImage.TYPE_INT_RGB);
-      Graphics2D g2d = image.createGraphics();
-      g2d.setColor(Color.WHITE);
-      g2d.fillRect(0, 0, 800, 100);
-      g2d.setColor(Color.BLACK);
-      g2d.setFont(new Font("Arial", Font.PLAIN, 20));
-      g2d.drawString(text, 10, 50);
-      g2d.dispose();
-
-      ByteArrayOutputStream baos = new ByteArrayOutputStream();
-      ImageIO.write(image, "png", baos);
-
-      ResponseCookie cookie =
-          ResponseCookie.from("chunks", String.valueOf(n)).httpOnly(false).build();
-
-      return ResponseEntity.ok()
-          .header(HttpHeaders.SET_COOKIE, cookie.toString())
-          .body(baos.toByteArray());
-    } catch (Exception e) {
-      return ResponseEntity.status(500).build();
-    }
-  }
-
-  @GetMapping(path = "/{chunks}.jpg", produces = MediaType.IMAGE_JPEG_VALUE)
-  public ResponseEntity<byte[]> getChunks(@PathVariable String chunks) {
-    try {
-      String[] parts = chunks.split("-");
-      int x = Integer.parseInt(parts[0]);
-      int y = parts.length == 1 ? x : Integer.parseInt(parts[1]);
-
-      if (fileBytes == null)
-        fileBytes = java.nio.file.Files.readAllBytes(new File(fileToDownload).toPath());
-
-      ResponseEntity.BodyBuilder responseBuilder = ResponseEntity.ok();
-
-      for (int i = x; i <= y; i++) {
-        int startIndex = (i - 1) * CHUNK_SIZE;
-        if (startIndex >= fileBytes.length) {
-          continue;
-        }
-        int endIndex = Math.min(startIndex + CHUNK_SIZE, fileBytes.length);
-
-        byte[] chunkBytes = new byte[endIndex - startIndex];
-        System.arraycopy(fileBytes, startIndex, chunkBytes, 0, chunkBytes.length);
-
-        String base64Chunk = java.util.Base64.getEncoder().encodeToString(chunkBytes);
-
-        ResponseCookie cookie =
-            ResponseCookie.from("chunk-" + i, base64Chunk).httpOnly(false).build();
-
-        responseBuilder.header(HttpHeaders.SET_COOKIE, cookie.toString());
-      }
-
-      String text = String.format("chunk %d - %d", x, y);
-      BufferedImage image = new BufferedImage(800, 100, BufferedImage.TYPE_INT_RGB);
-      Graphics2D g2d = image.createGraphics();
-      g2d.setColor(Color.WHITE);
-      g2d.fillRect(0, 0, 800, 100);
-      g2d.setColor(Color.BLACK);
-      g2d.setFont(new Font("Arial", Font.PLAIN, 20));
-      g2d.drawString(text, 10, 50);
-      g2d.dispose();
-
-      ByteArrayOutputStream baos = new ByteArrayOutputStream();
-      ImageIO.write(image, "jpeg", baos);
-
-      return responseBuilder.body(baos.toByteArray());
-    } catch (Exception e) {
-      return ResponseEntity.status(500).build();
-    }
-  }
-
   @Override
   public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
     registry.addHandler(
         new BinaryWebSocketHandler() {
           @Override
-          public void afterConnectionEstablished(WebSocketSession session) throws Exception {
+          public void afterConnectionEstablished(@Nonnull WebSocketSession session)
+              throws Exception {
             File file = new File(fileToDownload);
             try (java.io.InputStream in = new java.io.FileInputStream(file)) {
               byte[] buffer = new byte[CHUNK_SIZE];
@@ -184,75 +108,210 @@ public class ServingApp implements WebSocketConfigurer {
           }
         },
         "/ws-download");
-
     registry.addHandler(new UploadHandler(), "/ws-upload");
   }
 
-  private final class UploadHandler extends AbstractWebSocketHandler {
-    @Override
-    public void afterConnectionEstablished(WebSocketSession session) {
-      log.debug("Upload session {} opened", session.getId());
+  private static String sanitizeName(String raw) {
+    String name = raw.replaceAll("\\p{Cntrl}", "").trim();
+    int slash = Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\'));
+    if (slash >= 0) {
+      name = name.substring(slash + 1);
     }
-
-    @Override
-    protected void handleTextMessage(WebSocketSession session, TextMessage message)
-        throws IOException {
-      if (uploads.containsKey(session)) {
-        log.warn("Session {} already has an upload in progress", session.getId());
-        session.close(CloseStatus.POLICY_VIOLATION);
-        return;
-      }
-
-      String name = Paths.get(message.getPayload()).getFileName().toString();
-      Path target = Paths.get(uploadDir).resolve(name);
-
-      Files.deleteIfExists(target);
-
-      OutputStream out =
-          new BufferedOutputStream(
-              Files.newOutputStream(
-                  target, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING));
-      uploads.put(session, out);
-
-      log.debug("Session {} uploading to {}", session.getId(), target);
+    if (name.isEmpty() || ".".equals(name) || "..".equals(name)) {
+      return null;
     }
+    return name;
+  }
 
-    @Override
-    protected void handleBinaryMessage(WebSocketSession session, BinaryMessage message)
-        throws IOException {
-      OutputStream out = uploads.get(session);
-      if (out == null) {
-        return;
-      }
+  private static final class UploadState {
+    final String name;
 
-      byte[] chunk = new byte[message.getPayloadLength()];
-      message.getPayload().get(chunk);
-      out.write(chunk);
-    }
+    final long size;
 
-    @Override
-    public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
-      closeStream(session);
-    }
+    final String sha256;
 
-    @Override
-    public void handleTransportError(WebSocketSession session, Throwable exception) {
-      log.error("Transport error on session {}", session.getId(), exception);
-      closeStream(session);
-    }
+    final Path part;
 
-    private void closeStream(WebSocketSession session) {
-      OutputStream out = uploads.remove(session);
-      if (out == null) {
-        return;
-      }
+    final DigestOutputStream out;
 
+    long written;
+
+    UploadState(Path dir, String name, long size, String sha256) throws IOException {
+      this.name = name;
+      this.size = size;
+      this.sha256 = sha256;
+      this.part = dir.resolve(UUID.randomUUID() + "." + name + ".part");
+      MessageDigest digest;
       try {
-        out.flush();
+        digest = MessageDigest.getInstance("SHA-256");
+      } catch (NoSuchAlgorithmException e) {
+        throw new IllegalStateException(e);
+      }
+      this.out =
+          new DigestOutputStream(
+              new BufferedOutputStream(
+                  Files.newOutputStream(
+                      part, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)),
+              digest);
+    }
+
+    Path finalPath() {
+      return part.getParent().resolve(name);
+    }
+
+    boolean append(ByteBuffer payload) throws IOException {
+      int remaining = payload.remaining();
+      if (written + remaining > size) {
+        return false;
+      }
+      byte[] chunk = new byte[remaining];
+      payload.get(chunk);
+      out.write(chunk, 0, chunk.length);
+      written += remaining;
+      return true;
+    }
+
+    boolean complete() throws IOException {
+      out.flush();
+      return written == size
+          && HexFormat.of().formatHex(out.getMessageDigest().digest()).equals(sha256);
+    }
+
+    void closeStream() {
+      try {
         out.close();
-        log.debug("Finalized upload for session {}", session.getId());
       } catch (IOException e) {
-        log.error("Failed to finalize upload for session {}", session.getId(), e);
+        // ignore
+      }
+    }
+
+    void discard() {
+      closeStream();
+      try {
+        Files.deleteIfExists(part);
+      } catch (IOException e) {
+        // ignore
+      }
+    }
+  }
+
+  private class UploadHandler extends BinaryWebSocketHandler {
+
+    @Override
+    public void afterConnectionClosed(
+        @Nonnull WebSocketSession session, @Nonnull CloseStatus status) {
+      UploadState state = uploadStates.remove(session);
+      if (state != null) {
+        state.discard();
+        log.info("upload of {} aborted, deleted {}", state.name, state.part);
+      }
+    }
+
+    @Override
+    public void handleBinaryMessage(
+        @Nonnull WebSocketSession session, @Nonnull BinaryMessage message) {
+      UploadState state = uploadStates.get(session);
+      if (state == null) {
+        fail(session, "binary frame before start");
+        return;
+      }
+      try {
+        if (!state.append(message.getPayload())) {
+          fail(session, "exceeds declared size " + state.size);
+        }
+      } catch (IOException e) {
+        fail(session, "failed to write: " + e);
+      }
+    }
+
+    @Override
+    public void handleTextMessage(@Nonnull WebSocketSession session, @Nonnull TextMessage message) {
+      JsonNode json;
+      try {
+        json = objectMapper.readTree(message.getPayload());
+      } catch (IOException e) {
+        fail(session, "bad json: " + e);
+        return;
+      }
+      switch (json.path("action").asText("")) {
+        case "start" -> startUpload(session, json);
+        case "finish" -> finishUpload(session);
+        default -> fail(session, "unknown action");
+      }
+    }
+
+    private void startUpload(WebSocketSession session, JsonNode json) {
+      String name = sanitizeName(json.path("name").asText(""));
+      long size = json.path("size").asLong(-1);
+      String sha256 = json.path("sha256").asText("").toLowerCase(Locale.ROOT);
+      if (name == null) {
+        fail(session, "invalid file name");
+        return;
+      }
+      if (size < 0) {
+        fail(session, "invalid size");
+        return;
+      }
+      if (!sha256.matches("[0-9a-f]{64}")) {
+        fail(session, "invalid sha256");
+        return;
+      }
+      try {
+        Path dir = Paths.get(uploadDir);
+        Files.createDirectories(dir);
+        uploadStates.put(session, new UploadState(dir, name, size, sha256));
+        log.info("upload started {} {} bytes", name, size);
+      } catch (IOException e) {
+        fail(session, "cannot create temp file: " + e);
+      }
+    }
+
+    private void finishUpload(WebSocketSession session) {
+      UploadState state = uploadStates.remove(session);
+      if (state == null) {
+        fail(session, "no upload in progress");
+        return;
+      }
+      try {
+        if (state.complete()) {
+          state.closeStream();
+          Files.move(state.part, state.finalPath(), StandardCopyOption.REPLACE_EXISTING);
+          log.info("upload verified {} -> {}", state.part, state.finalPath());
+          reply(session, "done", null);
+        } else {
+          state.discard();
+          reply(session, "error", "sha256 or size mismatch");
+        }
+      } catch (IOException e) {
+        state.discard();
+        reply(session, "error", "finish failed: " + e);
+      }
+    }
+
+    private void fail(WebSocketSession session, String message) {
+      log.info("upload failed: {}", message);
+      UploadState state = uploadStates.remove(session);
+      if (state != null) {
+        state.discard();
+      }
+      reply(session, "error", message);
+      try {
+        session.close(CloseStatus.POLICY_VIOLATION);
+      } catch (IOException e) {
+        log.debug("close failed: {}", e.toString());
+      }
+    }
+
+    private void reply(WebSocketSession session, String action, String errorMessage) {
+      ObjectNode json = objectMapper.createObjectNode();
+      json.put("action", action);
+      if (errorMessage != null) {
+        json.put("message", errorMessage);
+      }
+      try {
+        session.sendMessage(new TextMessage(objectMapper.writeValueAsString(json)));
+      } catch (IOException e) {
+        log.info("failed to send {}: {}", action, e.toString());
       }
     }
   }
