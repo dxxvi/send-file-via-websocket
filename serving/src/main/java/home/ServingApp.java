@@ -64,7 +64,7 @@ public class ServingApp implements WebSocketConfigurer {
 
   static void main(String[] args) {
     if (Stream.of(args).noneMatch("file.to.download"::equals)) {
-      System.setProperty("file.to.download", "");
+      System.setProperty("file.to.download", "/tmp/msys64.7z");
       log.info("File to download is /tmp/msys64.7z. To change, set file.to.download");
     }
     if (Stream.of(args).noneMatch("upload.to.dir"::equals)) {
