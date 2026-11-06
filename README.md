@@ -1,3 +1,12 @@
-This is an example of sending a binary file (in chunks) from the server to the browser using
-websocket and the browser posts those chunks to a REST endpoint of another server to create
-the same on that server.  
+Print https://www.jetbrains.com/idea/whatsnew/2026-3/
+
+```
+document.querySelectorAll('div.page__header, div.page__footer, section#start-now, div.whatsnew-container.whatsnew-previous-release-block, aside, div.whatsnew-container-sidebar > section, div.whatsnew-top-section__content > div:first-child, div.whatsnew-feature-block__button').forEach(e => e.parentElement.removeChild(e));
+```
+```
+.whatsnew-container-sidebar {
+  --sidebar-width: 0;
+  width: auto;
+  margin: 0;
+}
+```
